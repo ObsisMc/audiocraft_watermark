@@ -27,7 +27,7 @@ from transformers import LogitsProcessor
 
 from nltk.util import ngrams
 
-from normalizers import normalization_strategy_lookup
+from .normalizers import normalization_strategy_lookup
 
 
 class WatermarkBase:
