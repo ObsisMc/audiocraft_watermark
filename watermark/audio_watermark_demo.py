@@ -139,18 +139,18 @@ def encode_decode_back(audio, compress_model):
 
 
 if __name__ == "__main__":
-    ## generate audio
+    ## 1. test1: generate audio
     # model = init_model(duration=8)
     # audio = generate_audio(model)
     # save_wav(audio, 32000, f"audio_generated_{model.duration}s.wav")
     
-    ## test watermarking and detecting
+    ## 2. test2: test watermarking and detecting
     # duration = 15
     # model = init_model(duration=duration, watermark_model=True)
     # audio, score_dict = watarmark_detect_audio(model)
     # save_wav(audio, 32000, f"audio_watermarked_{duration}s.wav")
     
-    ## compare results without and with watermark
+    ## 3. test3: compare results without and with watermark
     duration = 15
     model = init_model(duration=duration, watermark_model=False)
     audio = generate_audio(model)
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     audio, score_dict = watarmark_detect_audio(model)
     save_wav(audio, 32000, f"audio_watermarked_{duration}s.wav")
     
-    ## load and detect audio
+    ## 4. test4: load and detect audio
     # duration = 8
     # model = init_model(duration=duration, watermark_model=False)
     # audio_path = f"audio_watermarked_{duration}s.wav"
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     # detect_audio(model, audio_path=audio_path)
     
     
-    ## test whether encodec can encode and decode lossless
+    ## 5. test5: test whether encodec can encode and decode lossless
     # model = init_model()
     # audio, sr = read_wav("test.wav")
     # acc, codes1, codes2 = encode_decode_back(audio, model.compression_model)
