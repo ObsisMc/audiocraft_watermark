@@ -84,6 +84,9 @@ class MusicGen(BaseGenModel):
 
         lm = load_lm_model(name, device=device)
         compression_model = load_compression_model(name, device=device)
+        # codebook size: compression_model.quantizer.bins
+        # the num of codebook: compression_model.quantizer.total_codebooks
+        
         if 'self_wav' in lm.condition_provider.conditioners:
             lm.condition_provider.conditioners['self_wav'].match_len_on_eval = True
             lm.condition_provider.conditioners['self_wav']._use_masking = False
