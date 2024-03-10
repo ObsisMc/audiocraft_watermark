@@ -178,6 +178,7 @@ class LMModel(StreamingModule):
         self.__dict__['_fsdp'] = None
 
         # watermark parameters and init watermarker
+        self.watermark_mode = False
         self.gamma_wm = 0.5  # green list ratio
         self.delta_wm = 2.0  # add to tokens in the green list
         self.vocab_size = 2048  # default 2048 for MusicGen small & medium, but may be different for others (haven't tested)
@@ -396,7 +397,8 @@ class LMModel(StreamingModule):
         logits = logits[..., -1]  # [B x K x card]
 
         # watermark
-        logits[:, self.layer_wm, :] = self.watermarker(original_seq[:, self.layer_wm, :], logits[:, self.layer_wm, :])
+        if self.watermark_mode:
+            logits[:, self.layer_wm, :] = self.watermarker(original_seq[:, self.layer_wm, :], logits[:, self.layer_wm, :])
 
         # Apply softmax for sampling if temp > 0. Else, do greedy sampling to avoid zero division error.
         if use_sampling and temp > 0.0:

@@ -26,13 +26,14 @@ def save_wav(audio, sr, name):
     sf.write(name, audio, sr)
 
 
-def init_model(top_k=250, duration=30):
+def init_model(top_k=250, duration=30, watermark_model=False):
     model = MusicGen.get_pretrained('facebook/musicgen-medium')
 
     model.set_generation_params(
         use_sampling=True,
         top_k=top_k,
-        duration=duration
+        duration=duration,
+        watermark_mode=watermark_model
     )
     
     print(f"Number of codebooks: {model.compression_model.quantizer.total_codebooks}",
@@ -61,25 +62,31 @@ def generate_audio(model):
         descriptions=[
             #'80s pop track with bassy drums and synth',
             #'90s rock song with loud guitars and heavy drums',
-            #'Progressive rock drum and bass solo',
+            'Progressive rock drum and bass solo',
             #'Punk Rock song with loud drum and power guitar',
-            'Bluesy guitar instrumental with soulful licks and a driving rhythm section',
+            # 'Bluesy guitar instrumental with soulful licks and a driving rhythm section',
             #'Jazz Funk song with slap bass and powerful saxophone',
             # 'drum and bass beat with intense percussions'
         ],
         progress=True, return_tokens=True
         )
     
-    print(model.duration)
-    save_wav(output[0], 32000, f"audio_generated_{model.duration}s.wav")
     return output[0]
 
-def detect_audio(audio_path):
-    model = init_model(duration=15)  # just for load detector's parameters
+def detect_audio(model, audio_path=None, audio=None):
+    assert (audio_path is not None) ^ (audio is not None)
+    
     detector = init_detector(model)
     
-    audio, sr = read_wav(audio_path)  # only 1 channel audio
-    audio = torch.tensor(audio[None, ...], dtype=torch.float32).to(model.device)
+    # load audio, the audio should be (C, T)
+    if audio_path:
+        audio, sr = read_wav(audio_path)  # only 1 channel audio
+        audio = torch.tensor(audio[None, ...], dtype=torch.float32).to(model.device)
+    else:
+        # suppose audio is (B, C, T)
+        if len(audio.shape) == 3:
+            audio = audio[0]  # get the first audio in a batch
+        
     
     score_dict = detector.detect(audio) # or any other text of interest to analyze
     info_print = '\n'.join([str(k) + ':' + str(v) for k, v in score_dict.items()])
@@ -90,15 +97,15 @@ def detect_audio(audio_path):
     return audio, score_dict
     
 
-def watarmark_detect_audio(duration=8):
-    model = init_model(duration=duration)
+def watarmark_detect_audio(model):
     detector = init_detector(model)
     
     # generate audio
     with torch.no_grad():
         output = model.generate(
             descriptions=[
-                'Bluesy guitar instrumental with soulful licks and a driving rhythm section'
+                # 'Bluesy guitar instrumental with soulful licks and a driving rhythm section',
+                'Progressive rock drum and bass solo',
                 ],
             progress=True, return_tokens=True
             )
@@ -134,19 +141,33 @@ def encode_decode_back(audio, compress_model):
 
 if __name__ == "__main__":
     ## generate audio
-    model = init_model(duration=8)
-    generate_audio(model)
+    # model = init_model(duration=8)
+    # audio = generate_audio(model)
+    # save_wav(audio, 32000, f"audio_generated_{model.duration}s.wav")
     
     ## test watermarking and detecting
-    # duration = 8
-    # audio, score_dict = watarmark_detect_audio(duration=duration)
+    # duration = 15
+    # model = init_model(duration=duration, watermark_model=True)
+    # audio, score_dict = watarmark_detect_audio(model)
     # save_wav(audio, 32000, f"audio_watermarked_{duration}s.wav")
+    
+    ## compare results without and with watermark
+    duration = 15
+    model = init_model(duration=duration, watermark_model=False)
+    audio = generate_audio(model)
+    audio, score_dict = detect_audio(model, audio=audio)
+    save_wav(audio, 32000, f"audio_generated_{model.duration}s.wav")
+    
+    model = init_model(duration=duration, watermark_model=True)
+    audio, score_dict = watarmark_detect_audio(model)
+    save_wav(audio, 32000, f"audio_watermarked_{duration}s.wav")
     
     ## load and detect audio
     # duration = 8
+    # model = init_model(duration=duration, watermark_model=False)
     # audio_path = f"audio_watermarked_{duration}s.wav"
     # audio_path = f"audio_generated_{duration}s.wav"
-    # detect_audio(audio_path)
+    # detect_audio(model, audio_path=audio_path)
     
     
     ## test whether encodec can encode and decode lossless

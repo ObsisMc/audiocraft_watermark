@@ -96,7 +96,8 @@ class MusicGen(BaseGenModel):
     def set_generation_params(self, use_sampling: bool = True, top_k: int = 250,
                               top_p: float = 0.0, temperature: float = 1.0,
                               duration: float = 30.0, cfg_coef: float = 3.0,
-                              two_step_cfg: bool = False, extend_stride: float = 18):
+                              two_step_cfg: bool = False, extend_stride: float = 18,
+                              watermark_mode: bool = False):
         """Set the generation parameters for MusicGen.
 
         Args:
@@ -124,6 +125,10 @@ class MusicGen(BaseGenModel):
             'cfg_coef': cfg_coef,
             'two_step_cfg': two_step_cfg,
         }
+        
+        # set watermark mode
+        self.watermark_mode = watermark_mode
+        self.lm.watermark_mode = self.watermark_mode
 
     def generate_with_chroma(self, descriptions: tp.List[str], melody_wavs: MelodyType,
                              melody_sample_rate: int, progress: bool = False,
