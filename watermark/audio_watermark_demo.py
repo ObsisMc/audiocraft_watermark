@@ -1,9 +1,8 @@
 from audiocraft.models import MusicGen
-from audiocraft.models import MultiBandDiffusion
 import soundfile as sf
 import torch
 
-from watermark_processor import WatermarkAudioDetector
+from watermark.watermark_processor import WatermarkAudioDetector
 
 
 def read_wav(path):
