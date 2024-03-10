@@ -27,7 +27,7 @@ from transformers import LogitsProcessor
 
 from nltk.util import ngrams
 
-from .normalizers import normalization_strategy_lookup
+from watermark.normalizers import normalization_strategy_lookup
 
 
 class WatermarkBase:
@@ -92,6 +92,7 @@ class WatermarkLogitsProcessor(WatermarkBase, LogitsProcessor):
         return final_mask
 
     def _bias_greenlist_logits(self, scores: torch.Tensor, greenlist_mask: torch.Tensor, greenlist_bias: float) -> torch.Tensor:
+        # print(scores.shape, greenlist_mask.shape)
         scores[greenlist_mask] = scores[greenlist_mask] + greenlist_bias
         return scores
 
@@ -111,7 +112,7 @@ class WatermarkLogitsProcessor(WatermarkBase, LogitsProcessor):
             batched_greenlist_ids[b_idx] = greenlist_ids
 
         green_tokens_mask = self._calc_greenlist_mask(scores=scores, greenlist_token_ids=batched_greenlist_ids)
-
+        # print(green_tokens_mask, green_tokens_mask.dtype)
         scores = self._bias_greenlist_logits(scores=scores, greenlist_mask=green_tokens_mask, greenlist_bias=self.delta)
         return scores
 
@@ -269,6 +270,161 @@ class WatermarkDetector(WatermarkBase):
         # call score method
         output_dict = {}
         score_dict = self._score_sequence(tokenized_text, **kwargs)
+        if return_scores:
+            output_dict.update(score_dict)
+        # if passed return_prediction then perform the hypothesis test and return the outcome
+        if return_prediction:
+            z_threshold = z_threshold if z_threshold else self.z_threshold
+            assert z_threshold is not None, "Need a threshold in order to decide outcome of detection test"
+            output_dict["prediction"] = score_dict["z_score"] > z_threshold
+            if output_dict["prediction"]:
+                output_dict["confidence"] = 1 - score_dict["p_value"]
+
+        return output_dict
+    
+
+class WatermarkAudioDetector(WatermarkBase):
+    def __init__(
+        self,
+        *args,
+        device: torch.device = None,
+        compression_model=None,  # compression model to convert the continuous audio into a discrete sequence
+        layer_wm: int =0,  # only take one of quantized layers to watermark
+        z_threshold: float = 4.0,
+        ignore_repeated_bigrams: bool = True,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        # also configure the metrics returned/preprocessing options
+        assert device, "Must pass device"
+        assert compression_model, "Need a compress model (Encodec) to perform detection"
+
+        self.compression_model = compression_model
+        self.layer_wm = layer_wm
+
+        self.device = device
+        self.z_threshold = z_threshold
+        self.rng = torch.Generator(device=self.device)
+
+        if self.seeding_scheme == "simple_1":
+            self.min_prefix_len = 1
+        else:
+            raise NotImplementedError(f"Unexpected seeding_scheme: {self.seeding_scheme}")
+
+        self.ignore_repeated_bigrams = ignore_repeated_bigrams
+        if self.ignore_repeated_bigrams:
+            assert self.seeding_scheme == "simple_1", "No repeated bigram credit variant assumes the single token seeding scheme."
+
+    def _compute_z_score(self, observed_count, T):
+        # count refers to number of green tokens, T is total number of tokens
+        expected_count = self.gamma
+        numer = observed_count - expected_count * T
+        denom = sqrt(T * expected_count * (1 - expected_count))
+        z = numer / denom
+        return z
+
+    def _compute_p_value(self, z):
+        p_value = scipy.stats.norm.sf(z)
+        return p_value
+
+    def _score_sequence(
+        self,
+        input_ids: Tensor,
+        return_num_tokens_scored: bool = True,
+        return_num_green_tokens: bool = True,
+        return_green_fraction: bool = True,
+        return_green_token_mask: bool = False,
+        return_z_score: bool = True,
+        return_p_value: bool = True,
+    ):
+        if self.ignore_repeated_bigrams:
+            # Method that only counts a green/red hit once per unique bigram.
+            # New num total tokens scored (T) becomes the number unique bigrams.
+            # We iterate over all unqiue token bigrams in the input, computing the greenlist
+            # induced by the first token in each, and then checking whether the second
+            # token falls in that greenlist.
+            assert return_green_token_mask is False, "Can't return the green/red mask when ignoring repeats."
+            bigram_table = {}
+            token_bigram_generator = ngrams(input_ids.cpu().tolist(), 2)
+            freq = collections.Counter(token_bigram_generator)
+            num_tokens_scored = len(freq.keys())
+            for idx, bigram in enumerate(freq.keys()):
+                prefix = torch.tensor([bigram[0]], device=self.device)  # expects a 1-d prefix tensor on the randperm device
+                greenlist_ids = self._get_greenlist_ids(prefix)
+                bigram_table[bigram] = True if bigram[1] in greenlist_ids else False
+            green_token_count = sum(bigram_table.values())
+        else:
+            num_tokens_scored = len(input_ids) - self.min_prefix_len
+            if num_tokens_scored < 1:
+                raise ValueError(
+                    (
+                        f"Must have at least {1} token to score after "
+                        f"the first min_prefix_len={self.min_prefix_len} tokens required by the seeding scheme."
+                    )
+                )
+            # Standard method.
+            # Since we generally need at least 1 token (for the simplest scheme)
+            # we start the iteration over the token sequence with a minimum
+            # num tokens as the first prefix for the seeding scheme,
+            # and at each step, compute the greenlist induced by the
+            # current prefix and check if the current token falls in the greenlist.
+            green_token_count, green_token_mask = 0, []
+            for idx in range(self.min_prefix_len, len(input_ids)):
+                curr_token = input_ids[idx]
+                greenlist_ids = self._get_greenlist_ids(input_ids[:idx])
+                if curr_token in greenlist_ids:
+                    green_token_count += 1
+                    green_token_mask.append(True)
+                else:
+                    green_token_mask.append(False)
+
+        score_dict = dict()
+        if return_num_tokens_scored:
+            score_dict.update(dict(num_tokens_scored=num_tokens_scored))
+        if return_num_green_tokens:
+            score_dict.update(dict(num_green_tokens=green_token_count))
+        if return_green_fraction:
+            score_dict.update(dict(green_fraction=(green_token_count / num_tokens_scored)))
+        if return_z_score:
+            score_dict.update(dict(z_score=self._compute_z_score(green_token_count, num_tokens_scored)))
+        if return_p_value:
+            z_score = score_dict.get("z_score")
+            if z_score is None:
+                z_score = self._compute_z_score(green_token_count, num_tokens_scored)
+            score_dict.update(dict(p_value=self._compute_p_value(z_score)))
+        if return_green_token_mask:
+            score_dict.update(dict(green_token_mask=green_token_mask))
+
+        return score_dict
+
+    def detect(
+        self,
+        audio: torch.Tensor = None,  # (C, T)
+        return_prediction: bool = True,
+        return_scores: bool = True,
+        z_threshold: float = None,
+        **kwargs,
+    ) -> dict:
+
+        assert audio is not None, "Must pass an audio"
+        assert len(audio.size()) == 2, "Need (C, T) size of audio and don't supoort batch"
+        # Encodec needs a (B, C, T) audio
+        audio = audio.unsqueeze(0)
+        
+        if return_prediction:
+            kwargs["return_p_value"] = True  # to return the "confidence":=1-p of positive detections
+
+        # encodes audio and gets audio's codes (a tensor similar to token ids)
+        encoded_audio = self.compression_model.encode(audio)
+        audio_codes = encoded_audio[0]  # or encoded_audio.audio_codes (the same), shape (B, K, T')
+        codes_detect = audio_codes[0, self.layer_wm, :]  # just take one of quantized layers, shape (T')
+
+        # if tokenized_text[0] == self.tokenizer.bos_token_id:
+        #     tokenized_text = tokenized_text[1:]
+
+        # call score method
+        output_dict = {}
+        score_dict = self._score_sequence(codes_detect, **kwargs)
         if return_scores:
             output_dict.update(score_dict)
         # if passed return_prediction then perform the hypothesis test and return the outcome
