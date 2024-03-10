@@ -27,6 +27,8 @@ from ..modules.conditioners import (
 from ..modules.codebooks_patterns import CodebooksPatternProvider
 from ..modules.activations import get_activation_fn
 
+from watermark.watermark_processor import WatermarkLogitsProcessor
+
 
 logger = logging.getLogger(__name__)
 ConditionTensors = tp.Dict[str, ConditionType]
@@ -174,6 +176,19 @@ class LMModel(StreamingModule):
         self._init_weights(weight_init, depthwise_init, zero_bias_init)
         self._fsdp: tp.Optional[nn.Module]
         self.__dict__['_fsdp'] = None
+
+        # watermark parameters and init watermarker
+        self.gamma_wm = 0.5  # green list ratio
+        self.delta_wm = 2.0  # add to tokens in the green list
+        self.vocab_size = 2048  # default 2048 for MusicGen small & medium, but may be different for others (haven't tested)
+        self.seeding_scheme_wm = "simple_1"  # method to get random seed for watermarking
+        self.layer_wm = 0  # which codebook to watermark
+        self.watermarker = WatermarkLogitsProcessor(vocab=[i for i in range(self.vocab_size)],
+                                                    gamma=self.gamma_wm,
+                                                    delta=self.delta_wm,
+                                                    seeding_scheme=self.seeding_scheme_wm)
+
+        
 
     def _init_weights(self, weight_init: tp.Optional[str], depthwise_init: tp.Optional[str], zero_bias_init: bool):
         """Initialization of the transformer module weights.
@@ -347,6 +362,8 @@ class LMModel(StreamingModule):
             next_token (torch.Tensor): Next token tensor of shape [B, K, 1].
         """
         B = sequence.shape[0]
+        original_seq = sequence  # need original sequence to do watermarking
+
         cfg_coef = self.cfg_coef if cfg_coef is None else cfg_coef
         model = self if self._fsdp is None else self._fsdp
         two_step_cfg = self.two_step_cfg if two_step_cfg is None else two_step_cfg
@@ -377,6 +394,9 @@ class LMModel(StreamingModule):
 
         logits = logits.permute(0, 1, 3, 2)  # [B, K, card, T]
         logits = logits[..., -1]  # [B x K x card]
+
+        # watermark
+        logits[:, self.layer_wm, :] = self.watermarker(original_seq[:, self.layer_wm, :], logits[:, self.layer_wm, :])
 
         # Apply softmax for sampling if temp > 0. Else, do greedy sampling to avoid zero division error.
         if use_sampling and temp > 0.0:
